@@ -246,10 +246,19 @@ end
     fqs = Matrix{Float64}.(mats[:fqs])
     fqprev_fulls = Matrix{Float64}.(mats[:fqprev_fulls])
 
+    nonlinear_eq_funcs = [eval(quote
+        (res, J, scratch, z) ->
+            let pfull=scratch[1], Jq=scratch[2], q=$(zeros(nq)), fq=$fq
+                $(nonlinear_eq)
+                return nothing
+            end
+    end) for (nonlinear_eq, fq, nq) in zip(model_nonlinear_eqs, fqs, model_nqs)]
+
     init_zs = [zeros(nn) for nn in model_nns]
     for idx in eachindex(model_nonlinear_eqs)
         q = q0s[idx] + fqprev_fulls[idx] * vcat(init_zs...)
-        init_zs[idx] = initial_solution(model_nonlinear_eqs[idx], q, fqs[idx])
+        init_zs[idx] = Compat.invokelatest(initial_solution,
+                                           nonlinear_eq_funcs[idx], q, model_nns[idx])
     end
 
     while any(np -> np == 0, model_nps)
@@ -271,6 +280,7 @@ end
         deleteat!(model_nns, const_idxs)
         deleteat!(model_nqs, const_idxs)
         deleteat!(model_nonlinear_eqs, const_idxs)
+        deleteat!(nonlinear_eq_funcs, const_idxs)
         deleteat!(nl_elems, const_idxs)
         mats[:fy] = mats[:fy][:,varying_zidxs]
         mats[:c] = mats[:c][:,varying_zidxs]
@@ -283,13 +293,6 @@ end
     fqprev_fulls = Array{Float64}.(mats[:fqprev_fulls])
     pexps = Array{Float64}.(mats[:pexps])
 
-    nonlinear_eq_funcs = [eval(quote
-        (res, J, scratch, z) ->
-            let pfull=scratch[1], Jq=scratch[2], q=$(zeros(nq)), fq=$fq
-                $(nonlinear_eq)
-                return nothing
-            end
-    end) for (nonlinear_eq, fq, nq) in zip(model_nonlinear_eqs, fqs, model_nqs)]
     nonlinear_eq_set_ps = [
         function(scratch, p)
             pfull = scratch[1]
@@ -469,21 +472,13 @@ function reduce_pdims!(mats::Dict)
     end
 end
 
-function initial_solution(nleq, q0, fq)
+function initial_solution(init_nl_eq_func::Function, q0, nn)
     # determine an initial solution with a homotopy solver that may vary q0
     # between 0 and the true q0 -> q0 takes the role of p
-    nq, nn = size(fq)
-    init_nl_eq_func = eval(quote
-        (res, J, scratch, z) ->
-            let pfull=scratch[1], Jq=scratch[2], q=$(zeros(nq)), fq=$(fq)
-                $(nleq)
-                return nothing
-            end
-    end)
+    nq = length(q0)
     init_nleq = ParametricNonLinEq(init_nl_eq_func, nn, nq)
-    init_solver = Compat.invokelatest(HomotopySolver{SimpleSolver},
-                                      init_nleq, zeros(nq), zeros(nn))
-    init_z = Compat.invokelatest(solve, init_solver, q0)
+    init_solver = HomotopySolver{SimpleSolver}(init_nleq, zeros(nq), zeros(nn))
+    init_z = solve(init_solver, q0)
     if !hasconverged(init_solver)
         error("Failed to find initial solution")
     end
