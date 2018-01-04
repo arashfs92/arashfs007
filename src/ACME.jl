@@ -307,12 +307,13 @@ end
             return nothing
         end
         for pexp in pexps]
-    solvers = ((eval(:($Solver(ParametricNonLinEq($nonlinear_eq_funcs[$idx],
-                                          $nonlinear_eq_set_ps[$idx],
-                                          $nonlinear_eq_calc_Jps[$idx],
-                                          (zeros($model_nqs[$idx]), zeros($model_nns[$idx], $model_nqs[$idx])),
-                                          $model_nns[$idx], $model_nps[$idx]),
-                       zeros($model_nps[$idx]), $init_zs[$idx])))
+    solvers = ((Compat.invokelatest(Solver,
+                                    ParametricNonLinEq(nonlinear_eq_funcs[idx],
+                                        nonlinear_eq_set_ps[idx],
+                                        nonlinear_eq_calc_Jps[idx],
+                                        (zeros(model_nqs[idx]), zeros(model_nns[idx], model_nqs[idx])),
+                                        model_nns[idx], model_nps[idx]),
+                                    zeros(model_nps[idx]), init_zs[idx])
                 for idx in eachindex(model_nonlinear_eqs))...,)
     return DiscreteModel{typeof(solvers)}(mats, model_nonlinear_eqs, solvers)
 end
@@ -472,20 +473,21 @@ function initial_solution(nleq, q0, fq)
     # determine an initial solution with a homotopy solver that may vary q0
     # between 0 and the true q0 -> q0 takes the role of p
     nq, nn = size(fq)
-    return eval(quote
-        init_nl_eq_func = (res, J, scratch, z) ->
+    init_nl_eq_func = eval(quote
+        (res, J, scratch, z) ->
             let pfull=scratch[1], Jq=scratch[2], q=$(zeros(nq)), fq=$(fq)
                 $(nleq)
                 return nothing
             end
-        init_nleq = ParametricNonLinEq(init_nl_eq_func, $nn, $nq)
-        init_solver = HomotopySolver{SimpleSolver}(init_nleq, zeros($nq), zeros($nn))
-        init_z = solve(init_solver, $q0)
-        if !hasconverged(init_solver)
-            error("Failed to find initial solution")
-        end
-        return init_z
     end)
+    init_nleq = ParametricNonLinEq(init_nl_eq_func, nn, nq)
+    init_solver = Compat.invokelatest(HomotopySolver{SimpleSolver},
+                                      init_nleq, zeros(nq), zeros(nn))
+    init_z = Compat.invokelatest(solve, init_solver, q0)
+    if !hasconverged(init_solver)
+        error("Failed to find initial solution")
+    end
+    return init_z
 end
 
 nx(model::DiscreteModel) = length(model.x0)
@@ -504,23 +506,22 @@ function steadystate(model::DiscreteModel, u=zeros(nu(model)))
         zoff_last = zoff+nn(model,idx)-1
         steady_q0 = model.q0s[idx] + model.pexps[idx]*((model.dqs[idx]/IA_LU*model.b + model.eqs[idx])*u + (model.dqs[idx]/IA_LU*model.c + model.fqprevs[idx])*steady_z) +
             model.pexps[idx]*model.dqs[idx]/IA_LU*model.x0
-        steady_z[zoff:zoff_last] = eval(quote
-            steady_nl_eq_func = (res, J, scratch, z) ->
+        steady_nl_eq_func = eval(quote
+            (res, J, scratch, z) ->
                 let pfull=scratch[1], Jq=scratch[2], q=$(zeros(nq(model, idx))),
                     fq=$(model.pexps[idx]*model.dqs[idx]/IA_LU*model.c[:,zoff:zoff_last] + model.fqs[idx])
                     $(model.nonlinear_eqs[idx])
                     return nothing
                 end
-            steady_nleq = ParametricNonLinEq(steady_nl_eq_func, nn($model, $idx), nq($model, $idx))
-            steady_solver = HomotopySolver{SimpleSolver}(steady_nleq, zeros(nq($model, $idx)),
-                                                         zeros(nn($model, $idx)))
-            set_resabstol!(steady_solver, 1e-15)
-            steady_z = solve(steady_solver, $steady_q0)
-            if !hasconverged(steady_solver)
-                error("Failed to find steady state solution")
-            end
-            return steady_z
         end)
+        steady_nleq = ParametricNonLinEq(steady_nl_eq_func, nn(model, idx), nq(model, idx))
+        steady_solver = Compat.invokelatest(HomotopySolver{SimpleSolver}, steady_nleq, zeros(nq(model, idx)),
+                                                     zeros(nn(model, idx)))
+        set_resabstol!(steady_solver, 1e-15)
+        steady_z[zoff:zoff_last] = Compat.invokelatest(solve, steady_solver, steady_q0)
+        if !hasconverged(steady_solver)
+            error("Failed to find steady state solution")
+        end
         zoff += nn(model,idx)
     end
     return IA_LU\(model.b*u + model.c*steady_z + model.x0)
