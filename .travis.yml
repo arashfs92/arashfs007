@@ -20,8 +20,8 @@ jobs:
       stage: "Documentation"
       julia: 0.7
       script:
-        - julia -e 'using Pkg; pkg"add Documenter@0.19.6"; Pkg.develop(PackageSpec(path=pwd()))'
-        - julia docs/make.jl
+        - julia --project=docs/ -e 'using Pkg; Pkg.instantiate(); Pkg.develop(PackageSpec(path=pwd()))'
+        - julia --project=docs/ docs/make.jl
     - <<: *docs
       julia: 1.0
     - <<: *docs
